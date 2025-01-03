@@ -2,10 +2,45 @@ import json
 import os.path
 import subprocess
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 wg_confs_dir: str = "/etc/wireguard"
 ov_confs_dir: str = "/etc/openvpn/server"
+
+data_dir: str = os.path.join(os.path.dirname(__file__), 'data')
+result_file_path: str = os.path.join(data_dir, 'status_updater.json')
+
+
+def read_last_results(default: dict) -> dict:
+    if os.path.isfile(result_file_path):
+        with open(result_file_path, mode='r') as json_file:
+            return json.loads(json_file.read())
+    return default
+
+
+def write_results(result: dict):
+    if os.path.isfile(result_file_path):
+        os.remove(result_file_path)
+    with open(result_file_path, mode='w') as file:
+        file.write(json.dumps(result))
+
+
+def check_results_changes(old: dict, new: dict) -> bool:
+    old_servers_clients = old.get("ov", {})
+    new_servers_clients = new.get("ov", {})
+    for server, clients in old_servers_clients.items():
+        old_count = len(clients)
+        new_count = len(new_servers_clients.get(server, {}))
+        if old_count != new_count:
+            return True
+    old_servers_clients = old.get("wg", {})
+    new_servers_clients = new.get("wg", {})
+    for server, clients in old_servers_clients.items():
+        old_count = len(clients)
+        new_count = len(new_servers_clients.get(server, {}))
+        if old_count != new_count:
+            return True
+    return False
 
 
 def bash_command(command: List[str]) -> str:
@@ -28,7 +63,7 @@ def convert_openvpn_datetime_to_epoch(datetime_str) -> int:
     return int(gmt7_datetime.timestamp() * 1000)
 
 
-def update_openvpn_services() -> dict:
+def update_openvpn_services(public_ip: str) -> dict:
     ovpn_services: List[str] = []
     if os.path.isdir(ov_confs_dir):
         ovpn_services = [
@@ -48,9 +83,8 @@ def update_openvpn_services() -> dict:
         try:
             with open(os.path.join(ov_confs_dir, f"{service_name}.conf"), mode='r') as conf_file:
                 conf_lines = conf_file.readlines()
-                hostname = [line for line in conf_lines if line.startswith("server ")][0].split(' ')[1]
                 port = [line for line in conf_lines if line.startswith("port ")][0].split(' ')[1]
-                host_port = f"{hostname}:{port}".strip()
+                host_port = f"{public_ip}:{port}".strip()
             status_path: str = f"/var/log/openvpn-{service_name}.log"
             if not os.path.isfile(status_path):
                 raise Exception(f"Status log for service '{service_name}' does not exists at path: {status_path}")
@@ -66,16 +100,108 @@ def update_openvpn_services() -> dict:
     return result
 
 
-if __name__ == '__main__':
+def parse_wg_handshake_time(handshake_str, now) -> Optional[str]:
     try:
-        ovpn_result = update_openvpn_services()
+        components = [comp.strip() for comp in handshake_str.replace('ago', '').split(",")]
+        days, hours, minutes, seconds = 0, 0, 0, 0
+        for component in components:
+            if 'day' in component:
+                days = int(component.split(' ')[0])
+            elif 'hour' in component:
+                hours = int(component.split(' ')[0])
+            elif 'min' in component:
+                minutes = int(component.split(' ')[0])
+            elif 'sec' in component:
+                seconds = int(component.split(' ')[0])
+        delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+        if delta.total_seconds() >= 130:
+            return None  # wg handshake every 120 seconds, greater or equal to 130 mean offline.
+        target_datetime = now - delta
+        target_datetime = target_datetime + timedelta(hours=7)
+        return target_datetime.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception as parse_handshake_exc:
+        print(f"Warning: {parse_handshake_exc}")
+        return None
+
+
+def update_wg_services(public_ip: str) -> dict:
+    wg_services: List[str] = []
+    if os.path.isdir(wg_confs_dir):
+        wg_services = [
+            f.replace('.conf', '')
+            for f in os.listdir(wg_confs_dir)
+            if f.endswith(".conf")
+        ]
+    wg_services = list(filter(
+        lambda name: bash_command(["systemctl", "is-active", f"wg-quick@{name}.service"]) == 'active',
+        wg_services
+    ))
+    if not len(wg_services):
+        print("No active Wireguard services.")
+        return {}
+    result = {}
+    now = datetime.now()
+    for service_name in wg_services:
+        try:
+            with open(os.path.join(wg_confs_dir, f"{service_name}.conf"), mode='r') as conf_file:
+                conf_lines = conf_file.readlines()
+                port = [line for line in conf_lines if line.startswith("ListenPort")][0].split('=')[1].strip()
+                host_port = f"{public_ip}:{port}".strip()
+            result[host_port] = {}
+
+            wg_show: str = bash_command(["wg", "show", service_name])
+            peers = [[l.strip() for l in line.split('\n') if l.strip()] for line in wg_show.split("peer: ")[1:]]
+            for peer_infos in peers:
+                latest_handshake_lines = [line for line in peer_infos if line.startswith('latest handshake: ')]
+                if not len(latest_handshake_lines):
+                    continue
+                latest_handshake = ''.join(latest_handshake_lines[0].split(':')[1:]).strip()
+                handshake_date = parse_wg_handshake_time(latest_handshake, now=now)
+                if not handshake_date:
+                    continue
+                peer_public_key = peer_infos[0]
+                result[host_port][peer_public_key] = handshake_date
+        except Exception as parse_wg_service_exc:
+            print(f"Warning: {parse_wg_service_exc}")
+    return result
+
+
+def main():
+    # Collect statuses and save to 'status_updater.json' file
+    os.makedirs(data_dir, exist_ok=True)
+    last_result: dict = read_last_results(default={"ov": {}, "wg": {}})
+    public_ip = bash_command(['curl', 'ifconfig.me'])
+    if not public_ip:
+        print("Warning: Cannot get public IP")
+        return
+    try:
+        ovpn_result = update_openvpn_services(public_ip=public_ip)
     except Exception as exception:
         print(f"Warning: {exception}")
         ovpn_result = {}
+    try:
+        wg_result = update_wg_services(public_ip=public_ip)
+    except Exception as exception:
+        print(f"Warning: {exception}")
+        wg_result = {}
+    new_result = {"ov": ovpn_result, "wg": wg_result}
+    write_results(result=new_result)
+
+    has_changes = check_results_changes(last_result, new_result)
+
     body: dict = {
-        "openvpn": {
+        "ov": {
             key: len(value)
             for key, value in ovpn_result.items()
         },
+        "wg": {
+            key: len(value)
+            for key, value in wg_result.items()
+        },
     }
     print(json.dumps(body, indent=2))
+    print(f"Should submit counter API: {has_changes}")
+
+
+if __name__ == '__main__':
+    main()
