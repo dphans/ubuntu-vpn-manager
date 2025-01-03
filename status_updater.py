@@ -4,12 +4,16 @@ import subprocess
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+import requests
+from dotenv import load_dotenv
+
 wg_confs_dir: str = "/etc/wireguard"
 ov_confs_dir: str = "/etc/openvpn/server"
 
+load_dotenv(dotenv_path='script.env')
 data_dir: str = os.path.join(os.path.dirname(__file__), 'data')
 result_file_path: str = os.path.join(data_dir, 'status_updater.json')
-
+api_url: str = os.environ.get('API_URL', '')
 
 def read_last_results(default: dict) -> dict:
     if os.path.isfile(result_file_path):
@@ -167,6 +171,9 @@ def update_wg_services(public_ip: str) -> dict:
 
 
 def main():
+    if not api_url:
+        print("Failed to fetch API_URL, missing .env file?")
+
     # Collect statuses and save to 'status_updater.json' file
     os.makedirs(data_dir, exist_ok=True)
     last_result: dict = read_last_results(default={"ov": {}, "wg": {}})
@@ -189,6 +196,9 @@ def main():
 
     has_changes = check_results_changes(last_result, new_result)
 
+    if not has_changes:
+        print("No changes, no need to update API")
+        return
     body: dict = {
         "ov": {
             key: len(value)
@@ -199,8 +209,12 @@ def main():
             for key, value in wg_result.items()
         },
     }
-    print(json.dumps(body, indent=2))
-    print(f"Should submit counter API: {has_changes}")
+    response = requests.post(
+        url=f"{api_url}/feature-vpn/mobile-app-vpns/status-updater/",
+        json=body,
+    )
+    print(f"Sent to API with response code: {response.status_code}")
+
 
 
 if __name__ == '__main__':
