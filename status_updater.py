@@ -14,6 +14,8 @@ load_dotenv(dotenv_path='script.env')
 data_dir: str = os.path.join(os.path.dirname(__file__), 'data')
 result_file_path: str = os.path.join(data_dir, 'status_updater.json')
 api_url: str = os.environ.get('API_URL', '')
+public_ip: str = os.environ.get('PUBLIC_HOSTNAME', None)
+
 
 def read_last_results(default: dict) -> dict:
     if os.path.isfile(result_file_path):
@@ -170,6 +172,12 @@ def update_wg_services(public_ip: str) -> dict:
     return result
 
 
+def get_public_ipv4() -> str:
+    if type(public_ip) is str and len(public_ip):
+        return public_ip
+    return bash_command(['curl', 'ifconfig.me'])
+
+
 def main():
     if not api_url:
         print("Failed to fetch API_URL, missing .env file?")
@@ -177,17 +185,17 @@ def main():
     # Collect statuses and save to 'status_updater.json' file
     os.makedirs(data_dir, exist_ok=True)
     last_result: dict = read_last_results(default={"ov": {}, "wg": {}})
-    public_ip = bash_command(['curl', 'ifconfig.me'])
-    if not public_ip:
+    vps_ip = get_public_ipv4()
+    if not vps_ip:
         print("Warning: Cannot get public IP")
         return
     try:
-        ovpn_result = update_openvpn_services(public_ip=public_ip)
+        ovpn_result = update_openvpn_services(public_ip=vps_ip)
     except Exception as exception:
         print(f"Warning: {exception}")
         ovpn_result = {}
     try:
-        wg_result = update_wg_services(public_ip=public_ip)
+        wg_result = update_wg_services(public_ip=vps_ip)
     except Exception as exception:
         print(f"Warning: {exception}")
         wg_result = {}
@@ -195,7 +203,6 @@ def main():
     write_results(result=new_result)
 
     has_changes = check_results_changes(last_result, new_result)
-
     if not has_changes:
         print("No changes, no need to update API")
         return
@@ -214,7 +221,9 @@ def main():
         json=body,
     )
     print(f"Sent to API with response code: {response.status_code}")
-
+    if response.status_code >= 500:
+        print(response.content.decode('utf-8'))
+        print(json.dumps(body))
 
 
 if __name__ == '__main__':
