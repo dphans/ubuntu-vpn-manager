@@ -178,17 +178,15 @@ def get_public_ipv4() -> str:
     return bash_command(['curl', 'ifconfig.me'])
 
 
-def main():
+def main(compare_last_results: bool = False):
     if not api_url:
         print("Failed to fetch API_URL, missing .env file?")
 
-    # Collect statuses and save to 'status_updater.json' file
-    os.makedirs(data_dir, exist_ok=True)
-    last_result: dict = read_last_results(default={"ov": {}, "wg": {}})
     vps_ip = get_public_ipv4()
     if not vps_ip:
         print("Warning: Cannot get public IP")
         return
+
     try:
         ovpn_result = update_openvpn_services(public_ip=vps_ip)
     except Exception as exception:
@@ -199,13 +197,20 @@ def main():
     except Exception as exception:
         print(f"Warning: {exception}")
         wg_result = {}
-    new_result = {"ov": ovpn_result, "wg": wg_result}
-    write_results(result=new_result)
 
-    has_changes = check_results_changes(last_result, new_result)
-    if not has_changes:
-        print("No changes, no need to update API")
-        return
+    if compare_last_results:
+        # Collect statuses and save to 'status_updater.json' file
+        os.makedirs(data_dir, exist_ok=True)
+        last_result: dict = read_last_results(default={"ov": {}, "wg": {}})
+
+        new_result = {"ov": ovpn_result, "wg": wg_result}
+        write_results(result=new_result)
+
+        has_changes = check_results_changes(last_result, new_result)
+        if not has_changes:
+            print("No changes, no need to update API")
+            return
+
     body: dict = {
         "ov": {
             key: len(value)
