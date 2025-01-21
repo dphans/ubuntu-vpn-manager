@@ -7,7 +7,7 @@ from typing import List, Optional
 import requests
 from dotenv import load_dotenv
 
-wg_confs_dir: str = "/etc/wireguard"
+wg_confs_dir: str = "/etc/amnezia/amneziawg"
 ov_confs_dir: str = "/etc/openvpn/server"
 
 load_dotenv(dotenv_path='script.env')
@@ -75,7 +75,7 @@ def update_openvpn_services(public_ip: str) -> dict:
         ovpn_services = [
             f.replace('.conf', '')
             for f in os.listdir(ov_confs_dir)
-            if f.endswith(".conf")
+            if f.endswith(".conf") and not f.startswith("client_")
         ]
     ovpn_services = list(filter(
         lambda name: bash_command(["systemctl", "is-active", f"openvpn-server@{name}.service"]) == 'active',
@@ -139,7 +139,7 @@ def update_wg_services(public_ip: str) -> dict:
             if f.endswith(".conf")
         ]
     wg_services = list(filter(
-        lambda name: bash_command(["systemctl", "is-active", f"wg-quick@{name}.service"]) == 'active',
+        lambda name: bash_command(["systemctl", "is-active", f"awg-quick@{name}.service"]) == 'active',
         wg_services
     ))
     if not len(wg_services):
