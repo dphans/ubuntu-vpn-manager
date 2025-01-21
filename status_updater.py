@@ -155,7 +155,7 @@ def update_wg_services(public_ip: str) -> dict:
                 host_port = f"{public_ip}:{port}".strip()
             result[host_port] = {}
 
-            wg_show: str = bash_command(["wg", "show", service_name])
+            wg_show: str = bash_command(["awg", "show", service_name])
             peers = [[l.strip() for l in line.split('\n') if l.strip()] for line in wg_show.split("peer: ")[1:]]
             for peer_infos in peers:
                 latest_handshake_lines = [line for line in peer_infos if line.startswith('latest handshake: ')]
