@@ -12,7 +12,7 @@ if [ ! -f "$SCRIPT_ENV_PATH" ]; then
 fi
 
 # Install python3
-sudo apt install -y python3 python3-full python3-pip
+DEBIAN_FRONTEND=noninteractive sudo apt-get install -y python3 python3-full python3-pip
 
 # Create env
 python3 -m venv .env
