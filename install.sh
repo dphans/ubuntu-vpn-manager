@@ -53,8 +53,8 @@ cat <<EOF | sudo tee "${TIMER_SERVICE_PATH}" > /dev/null
 Description=Execute Updater periodic
 
 [Timer]
-OnBootSec=5s
-OnUnitActiveSec=5s
+OnBootSec=30s
+OnUnitActiveSec=30s
 Unit=${UPDATER_SERVICE_NAME}
 
 [Install]
